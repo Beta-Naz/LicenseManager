@@ -1,5 +1,6 @@
 ﻿using Server.Classes;
-using System.IO;
+using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -13,6 +14,7 @@ namespace Server
         private static int _maxClient;
         private static int _duration;
         private static List<ClientService> _allClient = new List<ClientService>();
+        private static Dictionary<string, string> _keyValuePairs = new Dictionary<string, string>();
         private enum TypeOutput
         {
             White,
@@ -23,10 +25,8 @@ namespace Server
         public static void Main(string[] args)
         {
             OnSetting();
-
             Thread tListner = new Thread(StartServer);
             tListner.Start();
-
 
             Thread tDisconnect = new Thread(CheckDisconnectClient);
             tDisconnect.Start();
@@ -45,43 +45,121 @@ namespace Server
                     int duration = (int)DateTime.Now.Subtract(_allClient[iClient].LastDateConnect).TotalSeconds;
                     if(duration > _duration)
                     {
-                        _allClient.Remove(_allClient[iClient]);
                         OnConsole($"Client: {_allClient[iClient].Token} disconnect from server due time out", TypeOutput.Red);
+                        _allClient.Remove(_allClient[iClient]);
                     }
                 }
                 Thread.Sleep(1000);
             }
         }
-        private static string SetCommandClient(string command)
+        private static void UserBan(string command)
         {
-            if(command == "/token")
+            command = command.Replace("/ban", "").Trim();
+            using(var db = new DbManager())
             {
-                if(_allClient.Count < _maxClient)
+                var user = db.Users.Where(user => user.Login == command).FirstOrDefault();
+                if (user == null)
                 {
-                    ClientService newClient = new ClientService();
-                    _allClient.Add(newClient);
-                    OnConsole("New client connection: " + newClient.Token, TypeOutput.Green);
+                    OnConsole($"The user don't find login: {command}", TypeOutput.Yellow);
                 }
                 else
                 {
-                    OnConsole("There is not enough space on the license server", TypeOutput.Red);
-                    return "/limit";
+                    user.IsBan = true;
+                    OnConsole($"{command} is ban", TypeOutput.Green);
+                    var client = _allClient.Where(c => c.Token == _keyValuePairs[user.Login]).FirstOrDefault();
+                    if(client != null)
+                    {
+                        OnConsole($"Client: {client.Token} disconnect from server", TypeOutput.Red);
+                        _allClient.Remove(client);
+                    }
+                }
+                db.SaveChanges();
+            }
+        }
+        private static void UserUnlocking(string command)
+        {
+            command = command.Replace("/unlocking", "").Trim();
+            using (var db = new DbManager())
+            {
+                var user = db.Users.Where(user => user.Login == command).FirstOrDefault();
+                if (user == null)
+                {
+                    OnConsole($"The user don't find login: {command}", TypeOutput.Yellow);
+                }
+                else
+                {
+                    user.IsBan = false;
+                    OnConsole($"{command} is unlocking", TypeOutput.Green);
+                }
+                db.SaveChanges();
+            }
+        }
+        private static string SetCommandClient(string command)
+        {
+            try
+            {
+                if (command.Contains("/token"))
+                {
+                    string[] loginAndPassword = command.Replace("/token", "").Trim().Split(' ');
+                    string login = loginAndPassword[0];
+                    string password = loginAndPassword[1];
+                    using (var db = new DbManager())
+                    {
+                        var user = db.Users.Where(user => user.Password == password && user.Login == login).FirstOrDefault();
+                        if(user == null)
+                        {
+                            OnConsole($"The user entered an incorrect login or password: {login} {password}", TypeOutput.Yellow);
+                            return "/disconnect: Incorrect login or password";
+                        }
+                        else if (user.IsBan)
+                        {
+                            OnConsole($"The user is ban: {login}", TypeOutput.Yellow);
+                            return $"/disconnect: User {login} is ban";
+                        }
+                    }
+
+                    if (_allClient.Count < _maxClient)
+                    {
+                        ClientService newClient = new ClientService();
+                        _keyValuePairs[login] = newClient.Token;
+                        _allClient.Add(newClient);
+                        OnConsole("New client connection: " + newClient.Token, TypeOutput.Green);
+                        return newClient.Token;
+                    }
+                    else
+                    {
+                        OnConsole("There is not enough space on the license server", TypeOutput.Red);
+                        return "/limit";
+                    }
+                }
+                else
+                {
+                    var client = _allClient.Find(c => c.Token == command);
+                    return client != null ? "/connect" : "/disconnect";
                 }
             }
-            else
+            catch(Exception ex)
             {
-                var client = _allClient.Find(c => c.Token == command);
-                return client != null ? "/connect" : "/disconnect";
+                OnConsole($"Error: {ex.Message}", TypeOutput.Red);
+                return "/disconnect";
             }
-            return null;
+          
         }
         private static void SetCommand()
         {
-            OnConsole("", TypeOutput.Red);
+            OnConsole("", TypeOutput.Red, false);
             string command = Console.ReadLine() ?? "";
             if (command.Contains("/disconnect"))
             {
                 DisconnectServer(command);
+            }
+            else if (command.Contains("/ban"))
+            {
+                UserBan(command);
+            }
+            else if (command.Contains("/unlocking"))
+            {
+                UserUnlocking(command);
             }
             else
             {
@@ -126,6 +204,8 @@ namespace Server
             OnConsole("- set initial settings", TypeOutput.White);
             OnConsole("/disconnect ", TypeOutput.Green, false);
             OnConsole("- disconnection user from the server", TypeOutput.White);
+            OnConsole("/ban ", TypeOutput.Green, false);
+            OnConsole("- ban user to the server", TypeOutput.White);
             OnConsole("/status ", TypeOutput.Green, false);
             OnConsole("- show list user", TypeOutput.White);
         }
@@ -159,11 +239,21 @@ namespace Server
                 int byteRec = handler.Receive(bytes);
                 string message = Encoding.UTF8.GetString(bytes, 0, byteRec);
                 string response = SetCommandClient(message);
-                handler.Send(Encoding.UTF8.GetBytes(response));
+                if(response != null)
+                {
+                    handler.Send(Encoding.UTF8.GetBytes(response));
+                }
             }
 
         }
-
+        static void ClearData()
+        {
+            _allClient.Clear();
+            _serverIpAddress = null;
+            _serverPort = 0;
+            _maxClient = 0;
+            _duration = 0;
+        }
         static void OnSetting()
         {
             string path = Directory.GetCurrentDirectory() + "/.config";
@@ -176,18 +266,19 @@ namespace Server
                     _maxClient = int.Parse(streamReader.ReadLine() ?? "");
                     _duration = int.Parse(streamReader.ReadLine() ?? "");
                 }
-                OnConsole("Server address: ", TypeOutput.White);
+                OnConsole("Server address: ", TypeOutput.White, false);
                 OnConsole(_serverIpAddress?.ToString() ?? "IP адрес не сохранен", TypeOutput.Green);
-                OnConsole("Server port: ", TypeOutput.White);
+                OnConsole("Server port: ", TypeOutput.White, false);
                 OnConsole(_serverPort != 0 ? _serverPort.ToString() : "Порт не сохранен", TypeOutput.Green);
-                OnConsole("Max count clients: ", TypeOutput.White);
-                OnConsole(_serverPort.ToString(), TypeOutput.Green);
-                OnConsole("Token lifetime: ", TypeOutput.White);
-                OnConsole(_serverPort.ToString(), TypeOutput.Green);
+                OnConsole("Max count clients: ", TypeOutput.White, false);
+                OnConsole(_maxClient.ToString(), TypeOutput.Green);
+                OnConsole("Token lifetime: ", TypeOutput.White, false);
+                OnConsole(_duration.ToString(), TypeOutput.Green);
             }
             else
             {
-                OnConsole("Please provide the IP address if the license server: ", TypeOutput.White);
+                ClearData();
+                OnConsole("Please provide the IP address if the license server: ", TypeOutput.White, false);
                 while(_serverIpAddress == null)
                 {
                     OnConsole("", TypeOutput.Green);
@@ -219,11 +310,11 @@ namespace Server
                 }
                 while (_maxClient <= 0);
                 OnConsole("Please specify the token life time: ", TypeOutput.White, false);
-                while (_duration == 0)
+                while (_duration <= 0)
                 {
                     OnConsole("", TypeOutput.Green);
-                    _serverPort = int.Parse(Console.ReadLine() ?? "");
-                    if (_serverPort == 0)
+                    _duration = int.Parse(Console.ReadLine() ?? "");
+                    if (_duration <= 0)
                     {
                         OnConsole("Please specify the token life time: ", TypeOutput.Red, false);
                     }
@@ -235,9 +326,9 @@ namespace Server
                     streamWriter.WriteLine(_maxClient.ToString());
                     streamWriter.WriteLine(_duration.ToString());
                 }
-                OnConsole("To change, write the command: ", TypeOutput.White, false);
-                OnConsole("/config", TypeOutput.Green);
             }
+            OnConsole("To change, write the command: ", TypeOutput.White, false);
+            OnConsole("/config", TypeOutput.Green);
         }
 
         private static void OnConsole(string text, TypeOutput type, bool inLine = true)
