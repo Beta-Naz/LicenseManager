@@ -1,6 +1,8 @@
 ﻿using Server.Classes;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
+using System.Text;
 
 namespace Server
 {
@@ -21,10 +23,57 @@ namespace Server
         public static void Main(string[] args)
         {
             OnSetting();
+
+            Thread tListner = new Thread(StartServer);
+            tListner.Start();
+
+
+            Thread tDisconnect = new Thread(CheckDisconnectClient);
+            tDisconnect.Start();
+
             while (true)
             {
                 SetCommand();
             }
+        }
+        static void CheckDisconnectClient()
+        {
+            while (true)
+            {
+                for(int iClient = 0;  iClient < _allClient.Count; iClient++)
+                {
+                    int duration = (int)DateTime.Now.Subtract(_allClient[iClient].LastDateConnect).TotalSeconds;
+                    if(duration > _duration)
+                    {
+                        _allClient.Remove(_allClient[iClient]);
+                        OnConsole($"Client: {_allClient[iClient].Token} disconnect from server due time out", TypeOutput.Red);
+                    }
+                }
+                Thread.Sleep(1000);
+            }
+        }
+        private static string SetCommandClient(string command)
+        {
+            if(command == "/token")
+            {
+                if(_allClient.Count < _maxClient)
+                {
+                    ClientService newClient = new ClientService();
+                    _allClient.Add(newClient);
+                    OnConsole("New client connection: " + newClient.Token, TypeOutput.Green);
+                }
+                else
+                {
+                    OnConsole("There is not enough space on the license server", TypeOutput.Red);
+                    return "/limit";
+                }
+            }
+            else
+            {
+                var client = _allClient.Find(c => c.Token == command);
+                return client != null ? "/connect" : "/disconnect";
+            }
+            return null;
         }
         private static void SetCommand()
         {
@@ -43,6 +92,7 @@ namespace Server
                         OnSetting();
                         break;
                     case "/status":
+                        GetStatus();
                         break;
                     case "/help":
                         Help();
@@ -85,9 +135,35 @@ namespace Server
 
             foreach(var client in _allClient)
             {
-
+                int duration = (int)DateTime.Now.Subtract(client.LastDateConnect).TotalSeconds;
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine($"Client: {client.Token}, time connection: {client.LastDateConnect.ToString("HH:mm:ss dd.MM")}," +
+                    $"duration: {duration}");
             }
         }
+
+        static void StartServer()
+        {
+            if (_serverIpAddress == null) return;
+            IPEndPoint endPoint = new IPEndPoint(_serverIpAddress, _serverPort);
+            Socket socketListner = new Socket(
+                AddressFamily.InterNetwork, 
+                SocketType.Stream, 
+                ProtocolType.Tcp);
+            socketListner.Bind(endPoint);
+            socketListner.Listen(10);
+            while (true)
+            {
+                Socket handler = socketListner.Accept();
+                byte[] bytes = new byte[10485760];
+                int byteRec = handler.Receive(bytes);
+                string message = Encoding.UTF8.GetString(bytes, 0, byteRec);
+                string response = SetCommandClient(message);
+                handler.Send(Encoding.UTF8.GetBytes(response));
+            }
+
+        }
+
         static void OnSetting()
         {
             string path = Directory.GetCurrentDirectory() + "/.config";
