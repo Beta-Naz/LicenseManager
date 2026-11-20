@@ -206,6 +206,8 @@ namespace Server
             OnConsole("- disconnection user from the server", TypeOutput.White);
             OnConsole("/ban ", TypeOutput.Green, false);
             OnConsole("- ban user to the server", TypeOutput.White);
+            OnConsole("/unlocking ", TypeOutput.Green, false);
+            OnConsole("- unlocking user to the server", TypeOutput.White);
             OnConsole("/status ", TypeOutput.Green, false);
             OnConsole("- show list user", TypeOutput.White);
         }
